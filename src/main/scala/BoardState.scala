@@ -3,15 +3,15 @@ package mychessAI
 import scala.collection.mutable.ListBuffer
 
 trait BoardStateRequirement[T] {
-    val turn: Side
-    def get(pos: Position): Option[Piece]
-    def generateAllMoves: List[Move]
-    def generateAllMovesSAN: List[(Move, String)]
-    def applyMove(move: Move): T
-    def visualize(useUnicode: Boolean): String
-    def toFEN: String
-    def isGameOver: Boolean
-    def getWinner: Option[Side]
+  val turn: Side
+  def get(pos: Position): Option[Piece]
+  def generateAllMoves: List[Move]
+  def generateAllMovesSAN: List[(Move, String)]
+  def applyMove(move: Move): T
+  def visualize(useUnicode: Boolean): String
+  def toFEN: String
+  def isGameOver: Boolean
+  def getWinner: Option[Side]
 }
 
 case class EtcData(
@@ -133,7 +133,7 @@ case class BoardState(
 
   def isStalemated: Boolean =
     !isChecked(turn) && generateAllMoves.isEmpty
-  
+
   // calculate insufficient material (King vs King + Knight or Bishop)
   def insufficient: Boolean =
     val w1 = pieceAndPos(WhiteSide)
@@ -437,14 +437,20 @@ case class BoardState(
     }
     (singledatas.groupBy((x) => (x._2, x._5)).toList.flatMap { case (_, l) =>
       l.map { case (s, pieceChar, isCapture, from, to, etc) =>
-        val (s1, ngroup) = if (l.map(_._4.col).distinct.length == 1) ("", l) else (('a' + from.col).toChar.toString, l.filter(_._4.col == from.col))
-        val s2 = if (ngroup.map(_._4.row).distinct.length == 1) "" else ('1' + from.row).toChar.toString
+        val (s1, ngroup) =
+          if (l.map(_._4.col).distinct.length == 1) ("", l)
+          else
+            (('a' + from.col).toChar.toString, l.filter(_._4.col == from.col))
+        val s2 =
+          if (ngroup.map(_._4.row).distinct.length == 1) ""
+          else ('1' + from.row).toChar.toString
 
         val firstPart = pieceChar + s1 + s2
         val secondPart = (if (isCapture) "x" else "") + to.toLAN + etc
         (
           s,
-          (if (firstPart.length == 0 && isCapture) ('a' + from.col).toChar.toString
+          (if (firstPart.length == 0 && isCapture)
+             ('a' + from.col).toChar.toString
            else firstPart) + secondPart
         )
       }
@@ -516,7 +522,79 @@ object BoardState {
     })
   }
 
-  def parsePosition(input: String): BoardState = ???
-
+  /* input example:
+    position fen rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w KQkq c6 0 2
+    position startpos moves e2e4
+   */
+  def parsePosition(input: String): BoardState =
+    val parts = input.split(" ")
+    val board = Array.fill[Option[Piece]](8, 8)(None)
+    var i = 1
+    val b1 = if (parts(i) == "fen")
+      val fen = parts(i + 1)
+      val turn = if (parts(i + 2) == "w") WhiteSide else BlackSide
+      val castling = parts(i + 3)
+      val enpassant = parts(i + 4)
+      val rows = fen.split("/")
+      for (row <- 0 until 8) {
+        var col = 0
+        for (c <- rows(7 - row)) {
+          if (c.isDigit) col += c.asDigit
+          else {
+            val piece = c match
+              case 'p' => BlackPawn
+              case 'n' => BlackKnight
+              case 'b' => BlackBishop
+              case 'r' => BlackRook
+              case 'q' => BlackQueen
+              case 'k' => BlackKing
+              case 'P' => WhitePawn
+              case 'N' => WhiteKnight
+              case 'B' => WhiteBishop
+              case 'R' => WhiteRook
+              case 'Q' => WhiteQueen
+              case 'K' => WhiteKing
+            board(row)(col) = Some(piece)
+            col += 1
+          }
+        }
+      }
+      val whiteKingMoved =
+        castling.indexOf('K') == -1 || castling.indexOf('Q') == -1
+      val whiteRookAMoved = castling.indexOf('Q') == -1
+      val whiteRookHMoved = castling.indexOf('K') == -1
+      val blackKingMoved =
+        castling.indexOf('k') == -1 || castling.indexOf('q') == -1
+      val blackRookAMoved = castling.indexOf('q') == -1
+      val blackRookHMoved = castling.indexOf('k') == -1
+      val enPassantPosition =
+        if (enpassant == "-") None
+        else Some(Position(enpassant(0) - 'a', enpassant(1) - '1'))
+      i += 7
+      BoardState(
+        board,
+        turn,
+        EtcData(
+          whiteKingMoved,
+          blackKingMoved,
+          whiteRookAMoved,
+          whiteRookHMoved,
+          blackRookAMoved,
+          blackRookHMoved,
+          enPassantPosition
+        )
+      )
+    else
+      i += 1
+      BoardState.initial
+    if (parts.length <= i) b1
+    else
+      assert(parts(i) == "moves")
+      parts
+        .drop(i + 1)
+        .foldLeft(b1)((b, s) =>
+          b.generateAllMoves.map((m) => (m, m.toLAN)).find(_._2 == s) match
+            case Some((m, _)) => b.applyMove(m)
+            case None => throw new IllegalArgumentException("Invalid move")
+        )
 }
-

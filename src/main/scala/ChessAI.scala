@@ -33,13 +33,15 @@ object ChessAI {
   ): (Int, List[Move]) = {
     if (depth == 0 || board.isGameOver) (evaluate(board), Nil)
     else if (maximizingPlayer) {
-      var maxEval = -1000
+      var maxEval = -1001
       var newAlpha = alpha
       var bestMove: List[Move] = Nil
       var result: (Int, List[Move]) =
         (maxEval, bestMove)
       val moves =
-        board.generateAllMoves.sortBy((m) => evaluate(board.applyMove(m))).reverse
+        board.generateAllMoves
+          .sortBy((m) => evaluate(board.applyMove(m)))
+          .reverse
       var i = 0
       while (i < moves.size && maxEval < beta) {
         val move = moves(i)
@@ -56,12 +58,13 @@ object ChessAI {
       }
       result
     } else {
-      var minEval = 1000
+      var minEval = 1001
       var newBeta = beta
       var bestMove: List[Move] = Nil
       var result: (Int, List[Move]) =
         (minEval, bestMove)
-      val moves = board.generateAllMoves.sortBy((m) => evaluate(board.applyMove(m)))
+      val moves =
+        board.generateAllMoves.sortBy((m) => evaluate(board.applyMove(m)))
       var i = 0
       while (i < moves.size && minEval > alpha) {
         val move = moves(i)
@@ -82,7 +85,7 @@ object ChessAI {
 
   def findBestMove(board: BoardState, depth: Int): (Int, List[Move]) = {
     val (v, bestMove) =
-      minimax(board, depth, -1000, 1000, board.turn == WhiteSide)
+      minimax(board, depth, -1001, 1001, board.turn == WhiteSide)
     (v * 100, bestMove)
   }
 
