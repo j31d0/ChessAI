@@ -2,18 +2,6 @@ package mychessAI
 
 import scala.collection.mutable.ListBuffer
 
-trait BoardStateRequirement[T] {
-  val turn: Side
-  def get(pos: Position): Option[Piece]
-  def generateAllMoves: List[Move]
-  def generateAllMovesSAN: List[(Move, String)]
-  def applyMove(move: Move): T
-  def visualize(useUnicode: Boolean): String
-  def toFEN: String
-  def isGameOver: Boolean
-  def getWinner: Option[Side]
-}
-
 case class EtcData(
     whiteKingMoved: Boolean = false,
     blackKingMoved: Boolean = false,
@@ -24,13 +12,62 @@ case class EtcData(
     enPassant: Option[Position] = None
 )
 
-case class BoardState(
-    board: Array[Array[Option[Piece]]],
-    turn: Side,
-    etc: EtcData
-) extends BoardStateRequirement[BoardState] {
+class PseudoBoardState(
+    val board: Array[Array[Option[Piece]]],
+    val turn: Side,
+    val etc: EtcData
+) {
   val bb = BitBoard(data = board.map(_.map(_.isDefined)))
   def get(pos: Position): Option[Piece] = board(pos.row)(pos.col)
+
+  val pieceAndPos: Map[Side, IndexedSeq[(Piece, Position)]] =
+    val whiteBuilder = ListBuffer.empty[(Piece, Position)]
+    val blackBuilder = ListBuffer.empty[(Piece, Position)]
+    for {
+      row <- board.indices
+      col <- board(row).indices
+      pieceOption = board(row)(col)
+      if pieceOption.isDefined
+    } {
+      val piece = pieceOption.get
+      if (piece.side == WhiteSide) whiteBuilder += ((piece, Position(row, col)))
+      else blackBuilder += ((piece, Position(row, col)))
+    }
+    Map(
+      WhiteSide -> whiteBuilder.toIndexedSeq,
+      BlackSide -> blackBuilder.toIndexedSeq
+    )
+
+  val getAttackingBitBoard: Map[Side, BitBoard] =
+    List(WhiteSide, BlackSide).map { case side =>
+      val arr = Array.fill(8, 8)(false)
+      pieceAndPos(side).foreach((piece, pos) => {
+        piece
+          .generateAttackingPositions(pos, bb)
+          .foreach((p) => arr(p.row)(p.col) = true)
+      })
+      (side, BitBoard(arr))
+    }.toMap
+
+  val isChecked: Map[Side, Boolean] = List(WhiteSide, BlackSide).map {
+    case side =>
+      val kingPosition = pieceAndPos(side)
+        .find(_._1 == (if (side == WhiteSide) WhiteKing else BlackKing))
+        .get
+        ._2
+      val opponentTurn = if (side == WhiteSide) BlackSide else WhiteSide
+      val opponentMoves = getAttackingBitBoard(opponentTurn)
+      (side, opponentMoves.data(kingPosition.row)(kingPosition.col))
+  }.toMap
+
+  def toBoardState: BoardState = BoardState(board, turn, etc)
+}
+
+case class BoardState(
+    override val board: Array[Array[Option[Piece]]],
+    override val turn: Side,
+    override val etc: EtcData
+) extends PseudoBoardState(board, turn, etc) {
 
   def visualize(useUnicode: Boolean): String = {
     val sb = StringBuilder.newBuilder
@@ -102,158 +139,12 @@ case class BoardState(
     s"$fenBoardString $fenTurn $fenCastling $fenEnPassant $fenHalfMoveClock $fenFullMoveNumber"
   }
 
-  def pieceAndPos(side: Side): IndexedSeq[(Piece, Position)] = for {
-    row <- board.indices
-    col <- board(row).indices
-    pieceOption = board(row)(col)
-    if pieceOption.isDefined && pieceOption.get.side == side
-  } yield (pieceOption.get, Position(row, col))
-
-  def getAttackingBitBoard(side: Side): BitBoard =
-    val arr = Array.fill(8, 8)(false)
-    pieceAndPos(side).foreach((piece, pos) => {
-      piece
-        .generateAttackingPositions(pos, bb)
-        .foreach((p) => arr(p.row)(p.col) = true)
-    })
-    BitBoard(arr)
-
-  def isChecked(side: Side): Boolean = {
-    val kingPosition = pieceAndPos(side)
-      .find(_._1 == (if (side == WhiteSide) WhiteKing else BlackKing))
-      .get
-      ._2
-    val opponentTurn = if (side == WhiteSide) BlackSide else WhiteSide
-    val opponentMoves = getAttackingBitBoard(opponentTurn)
-    opponentMoves.data(kingPosition.row)(kingPosition.col)
-  }
-
-  def isCheckmated: Boolean =
-    isChecked(turn) && generateAllMoves.isEmpty
-
-  def isStalemated: Boolean =
-    !isChecked(turn) && generateAllMoves.isEmpty
-
-  // calculate insufficient material (King vs King + Knight or Bishop)
-  def insufficient: Boolean =
-    val w1 = pieceAndPos(WhiteSide)
-    val b1 = pieceAndPos(BlackSide)
-    w1.length == 1 && b1.length == 1 ||
-    w1.length == 1 && b1.length == 2 && b1.exists(_._1.isInstanceOf[Knight]) ||
-    b1.length == 1 && w1.length == 2 && w1.exists(_._1.isInstanceOf[Knight]) ||
-    w1.length == 1 && b1.length == 2 && b1.exists(_._1.isInstanceOf[Bishop]) ||
-    b1.length == 1 && w1.length == 2 && w1.exists(_._1.isInstanceOf[Bishop])
-
-  def isDrawn: Boolean = isStalemated || insufficient
-  def isGameOver: Boolean = isCheckmated || isDrawn
-  def getWinner: Option[Side] =
-    if (isCheckmated) Some(if (turn == WhiteSide) BlackSide else WhiteSide)
-    else None
-
-  def applyMove(move: Move): BoardState = {
-    val boardCopy =
-      board.map(_.clone()) // Create a deep copy of the board
-
-    val newEtc = move match
-      case m: SingleMove => {
-        val originalPiece = boardCopy(m.from.row)(m.from.col).getOrElse(
-          throw new IllegalArgumentException(
-            "No piece found at the source square"
-          )
-        )
-        val newPiece = m match
-          case PromotionCapturingMove(from, to, promotion)    => promotion
-          case PromotionNonCapturingMove(from, to, promotion) => promotion
-          case _                                              => originalPiece
-
-        move match
-          case m: CapturingMove =>
-            boardCopy(m.capturedPosition.row)(m.capturedPosition.col) = None
-          case _ => ()
-        // Move the piece to the destination square
-        boardCopy(m.to.row)(m.to.col) = Some(newPiece)
-        boardCopy(m.from.row)(m.from.col) = None
-        etc.copy(
-          whiteKingMoved = etc.whiteKingMoved || originalPiece == WhiteKing,
-          blackKingMoved = etc.blackKingMoved || originalPiece == BlackKing,
-          whiteRookAMoved =
-            etc.whiteRookAMoved || originalPiece == WhiteRook && m.from == Position(
-              0,
-              0
-            ),
-          whiteRookHMoved =
-            etc.whiteRookHMoved || originalPiece == WhiteRook && m.from == Position(
-              0,
-              7
-            ),
-          blackRookAMoved =
-            etc.blackRookAMoved || originalPiece == BlackRook && m.from == Position(
-              7,
-              0
-            ),
-          blackRookHMoved =
-            etc.blackRookHMoved || originalPiece == BlackRook && m.from == Position(
-              7,
-              7
-            ),
-          enPassant =
-            if (originalPiece == WhitePawn && m.from.row == 1 && m.to.row == 3)
-              Some(Position(2, m.from.col))
-            else if (
-              originalPiece == BlackPawn && m.from.row == 6 && m.to.row == 4
-            ) Some(Position(5, m.from.col))
-            else None
-        )
-      }
-      case CastlingMove(side, isKingSide) => {
-        val row = if (side == WhiteSide) 0 else 7
-        val kingCol = 4
-        val rookCol = if (isKingSide) 7 else 0
-        val king = boardCopy(row)(kingCol).getOrElse(
-          throw new IllegalArgumentException("No king found")
-        )
-        val rook = boardCopy(row)(rookCol).getOrElse(
-          throw new IllegalArgumentException("No rook found")
-        )
-        boardCopy(row)(kingCol) = None
-        boardCopy(row)(rookCol) = None
-        boardCopy(row)(if (isKingSide) 6 else 2) = Some(king)
-        boardCopy(row)(if (isKingSide) 5 else 3) = Some(rook)
-        etc.copy(
-          whiteKingMoved = etc.whiteKingMoved || side == WhiteSide,
-          blackKingMoved = etc.blackKingMoved || side == BlackSide,
-          whiteRookAMoved =
-            etc.whiteRookAMoved || (side == WhiteSide && !isKingSide),
-          whiteRookHMoved =
-            etc.whiteRookHMoved || (side == WhiteSide && isKingSide),
-          blackRookAMoved =
-            etc.blackRookAMoved || (side == BlackSide && !isKingSide),
-          blackRookHMoved =
-            etc.blackRookHMoved || (side == BlackSide && isKingSide),
-          enPassant = None
-        )
-      }
-
-    val nextTurn =
-      if (turn == WhiteSide) BlackSide else WhiteSide // Switch the turn
-
-    BoardState(boardCopy, nextTurn, newEtc)
-  }
-
-  def generatePseudoMoves: List[Move] = {
+  val generatePseudoMoves: List[Move] = {
     val moves = ListBuffer.empty[Move]
-    val pieceAndPos: IndexedSeq[(Piece, Position)] = for {
-      row <- board.indices
-      col <- board(row).indices
-      pieceOption = board(row)(col)
-      if pieceOption.isDefined && pieceOption.get.side == turn
-    } yield (pieceOption.get, Position(row, col))
-    val opponentPieceAndPos: IndexedSeq[(Piece, Position)] = for {
-      row <- board.indices
-      col <- board(row).indices
-      pieceOption = board(row)(col)
-      if pieceOption.isDefined && pieceOption.get.side != turn
-    } yield (pieceOption.get, Position(row, col))
+    val mypieceAndPos: IndexedSeq[(Piece, Position)] = pieceAndPos(turn)
+    val opponentPieceAndPos: IndexedSeq[(Piece, Position)] = pieceAndPos(
+      if (turn == WhiteSide) BlackSide else WhiteSide
+    )
     val attackedBitBoard = {
       val arr = Array.fill(8, 8)(false)
       opponentPieceAndPos.foreach((piece, pos) => {
@@ -263,7 +154,7 @@ case class BoardState(
       })
       BitBoard(arr)
     }
-    val noncapturingMoves = pieceAndPos
+    val noncapturingMoves = mypieceAndPos
       .map((piece, pos) =>
         piece
           .generateNonAttackingPositions(pos, bb)
@@ -300,7 +191,7 @@ case class BoardState(
           )
       )
       .flatten
-    val capturingMoves = pieceAndPos
+    val capturingMoves = mypieceAndPos
       .map((piece, pos) =>
         piece
           .generateAttackingPositions(pos, bb)
@@ -398,8 +289,123 @@ case class BoardState(
     (noncapturingMoves.toList ++ capturingMoves.toList ++ castlingMoves).distinct
   }
 
-  def generateAllMoves: List[Move] =
-    generatePseudoMoves.filter(!applyMove(_).isChecked(turn))
+  val generateAllMoves: List[Move] =
+    generatePseudoMoves.filter(!applyPseudoMove(_).isChecked(turn))
+
+  val isCheckmated: Boolean =
+    isChecked(turn) && generateAllMoves.isEmpty
+
+  val isStalemated: Boolean =
+    !isChecked(turn) && generateAllMoves.isEmpty
+
+  // calculate insufficient material (King vs King + Knight or Bishop)
+  val insufficient: Boolean =
+    val w1 = pieceAndPos(WhiteSide)
+    val b1 = pieceAndPos(BlackSide)
+    w1.length == 1 && b1.length == 1 ||
+    w1.length == 1 && b1.length == 2 && b1.exists(_._1.isInstanceOf[Knight]) ||
+    b1.length == 1 && w1.length == 2 && w1.exists(_._1.isInstanceOf[Knight]) ||
+    w1.length == 1 && b1.length == 2 && b1.exists(_._1.isInstanceOf[Bishop]) ||
+    b1.length == 1 && w1.length == 2 && w1.exists(_._1.isInstanceOf[Bishop])
+
+  val isDrawn: Boolean = isStalemated || insufficient
+  val isGameOver: Boolean = isCheckmated || isDrawn
+  val getWinner: Option[Side] =
+    if (isCheckmated) Some(if (turn == WhiteSide) BlackSide else WhiteSide)
+    else None
+
+  def applyPseudoMove(move: Move): PseudoBoardState = {
+    val boardCopy =
+      board.map(_.clone()) // Create a deep copy of the board
+
+    val newEtc = move match
+      case m: SingleMove => {
+        val originalPiece = boardCopy(m.from.row)(m.from.col).getOrElse(
+          throw new IllegalArgumentException(
+            "No piece found at the source square"
+          )
+        )
+        val newPiece = m match
+          case PromotionCapturingMove(from, to, promotion)    => promotion
+          case PromotionNonCapturingMove(from, to, promotion) => promotion
+          case _                                              => originalPiece
+
+        move match
+          case m: CapturingMove =>
+            boardCopy(m.capturedPosition.row)(m.capturedPosition.col) = None
+          case _ => ()
+        // Move the piece to the destination square
+        boardCopy(m.to.row)(m.to.col) = Some(newPiece)
+        boardCopy(m.from.row)(m.from.col) = None
+        etc.copy(
+          whiteKingMoved = etc.whiteKingMoved || originalPiece == WhiteKing,
+          blackKingMoved = etc.blackKingMoved || originalPiece == BlackKing,
+          whiteRookAMoved =
+            etc.whiteRookAMoved || originalPiece == WhiteRook && m.from == Position(
+              0,
+              0
+            ),
+          whiteRookHMoved =
+            etc.whiteRookHMoved || originalPiece == WhiteRook && m.from == Position(
+              0,
+              7
+            ),
+          blackRookAMoved =
+            etc.blackRookAMoved || originalPiece == BlackRook && m.from == Position(
+              7,
+              0
+            ),
+          blackRookHMoved =
+            etc.blackRookHMoved || originalPiece == BlackRook && m.from == Position(
+              7,
+              7
+            ),
+          enPassant =
+            if (originalPiece == WhitePawn && m.from.row == 1 && m.to.row == 3)
+              Some(Position(2, m.from.col))
+            else if (
+              originalPiece == BlackPawn && m.from.row == 6 && m.to.row == 4
+            ) Some(Position(5, m.from.col))
+            else None
+        )
+      }
+      case CastlingMove(side, isKingSide) => {
+        val row = if (side == WhiteSide) 0 else 7
+        val kingCol = 4
+        val rookCol = if (isKingSide) 7 else 0
+        val king = boardCopy(row)(kingCol).getOrElse(
+          throw new IllegalArgumentException("No king found")
+        )
+        val rook = boardCopy(row)(rookCol).getOrElse(
+          throw new IllegalArgumentException("No rook found")
+        )
+        boardCopy(row)(kingCol) = None
+        boardCopy(row)(rookCol) = None
+        boardCopy(row)(if (isKingSide) 6 else 2) = Some(king)
+        boardCopy(row)(if (isKingSide) 5 else 3) = Some(rook)
+        etc.copy(
+          whiteKingMoved = etc.whiteKingMoved || side == WhiteSide,
+          blackKingMoved = etc.blackKingMoved || side == BlackSide,
+          whiteRookAMoved =
+            etc.whiteRookAMoved || (side == WhiteSide && !isKingSide),
+          whiteRookHMoved =
+            etc.whiteRookHMoved || (side == WhiteSide && isKingSide),
+          blackRookAMoved =
+            etc.blackRookAMoved || (side == BlackSide && !isKingSide),
+          blackRookHMoved =
+            etc.blackRookHMoved || (side == BlackSide && isKingSide),
+          enPassant = None
+        )
+      }
+
+    val nextTurn =
+      if (turn == WhiteSide) BlackSide else WhiteSide // Switch the turn
+
+    PseudoBoardState(boardCopy, nextTurn, newEtc)
+  }
+
+  def applyMove(m: Move): BoardState = applyPseudoMove(m).toBoardState
+
   def generateAllMovesSAN: List[(Move, String)] = {
     val pmoves = generatePseudoMoves.map((m) =>
       val nstate = applyMove(m)
