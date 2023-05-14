@@ -3,7 +3,7 @@ package mychessAI
 import scala.io.StdIn
 
 object Main:
-    def main(args: Array[String]): Unit = {
+  def main(args: Array[String]): Unit = {
 
     // UCI protocol initialization
     println("id name MyChessAI")
@@ -25,25 +25,32 @@ object Main:
 
         case "position" =>
           position = BoardState.parsePosition(input)
-          // Update the internal game position
+        // Update the internal game position
 
         case "go" =>
-          val depth = 3
-          val (cp, bestMove) = ChessAI.findBestMove(position, depth)
-          println(s"info depth $depth score cp $cp pv ${bestMove.map(_.toLAN).mkString(" ")}")
+          val depth = if (input.split(" ").contains("depth"))
+            val depthIdx = input.split(" ").indexOf("depth") + 1
+            input.split(" ")(depthIdx).toInt
+          else 3
 
-          println(s"bestmove ${bestMove.head.toLAN}")
+          for (idepth <- 1 to depth) {
+            val (cp, bestMove) = ChessAI.findBestMove(position, idepth)
+            println(
+              s"info depth $idepth score cp $cp nodes ${ChessAI.transpositionTable.table.size} pv ${bestMove.map(_.toLAN).mkString(" ")}"
+            )
+            if (idepth == depth) println(s"bestmove ${bestMove.head.toLAN}")
+          }
 
         case "quit" =>
           System.exit(0)
 
         case _ =>
-          // Handle unknown command or ignore
+        // Handle unknown command or ignore
       }
     }
   }
 
-  /* def main(args: Array[String]): Unit =
+/* def main(args: Array[String]): Unit =
     println("Hello world!")
     println(msg)
     var i = BoardState.initial
@@ -63,5 +70,5 @@ object Main:
     }
 
   def msg = "I was compiled by Scala 3. :)"
-  */
+ */
 end Main

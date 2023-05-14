@@ -18,6 +18,13 @@ class PseudoBoardState(
     val etc: EtcData
 ) {
   val bb = BitBoard(data = board.map(_.map(_.isDefined)))
+  val hashKey: Int =
+    (
+      board.map(_.map(_.map(_.toChar).getOrElse(' ')).mkString).mkString,
+      turn,
+      etc
+    ).hashCode
+
   def get(pos: Position): Option[Piece] = board(pos.row)(pos.col)
 
   val pieceAndPos: Map[Side, IndexedSeq[(Piece, Position)]] =
@@ -289,8 +296,13 @@ case class BoardState(
     (noncapturingMoves.toList ++ capturingMoves.toList ++ castlingMoves).distinct
   }
 
-  val generateAllMoves: List[Move] =
-    generatePseudoMoves.filter(!applyPseudoMove(_).isChecked(turn))
+  val generateAllMoves: List[(Move, PseudoBoardState)] =
+    generatePseudoMoves
+      .map((m) => (m, applyPseudoMove(m)))
+      .filter(!_._2.isChecked(turn))
+      .map { case (m, s) =>
+        (m, s)
+      }
 
   val isCheckmated: Boolean =
     isChecked(turn) && generateAllMoves.isEmpty
@@ -599,8 +611,10 @@ object BoardState {
       parts
         .drop(i + 1)
         .foldLeft(b1)((b, s) =>
-          b.generateAllMoves.map((m) => (m, m.toLAN)).find(_._2 == s) match
-            case Some((m, _)) => b.applyMove(m)
+          b.generateAllMoves
+            .map((m) => (m._2, m._1.toLAN))
+            .find(_._2 == s) match
+            case Some((m, _)) => m.toBoardState
             case None => throw new IllegalArgumentException("Invalid move")
         )
 }
